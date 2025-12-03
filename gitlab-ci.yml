@@ -1,0 +1,167 @@
+# =============================================================================
+# DiffQuiz - GitLab CI/CD Pipeline Template
+# =============================================================================
+# Ce fichier est un template générique pour GitLab CI/CD.
+# Adaptez-le selon votre environnement et infrastructure.
+# =============================================================================
+
+stages:
+  - quiz
+  - test
+  - deploy
+
+# Variables globales (à personnaliser selon votre environnement)
+variables:
+  PYTHON_VERSION: "3.11"
+
+# =============================================================================
+# Stage 1: Génération du Quiz
+# =============================================================================
+
+llm-quiz-generation:
+  stage: quiz
+  image: python:${PYTHON_VERSION}-slim
+  before_script:
+    - apt-get update && apt-get install -y git
+    - pip install -r requirements.txt
+  script:
+    - echo "🤖 Génération du QCM..."
+    - python3 generate_quiz.py
+  artifacts:
+    reports:
+      dotenv: quiz.env  # Passe la variable EXPECTED_SECRET_HASH au job suivant
+    paths:
+      - quiz_report.html
+    expire_in: 1 week
+  rules:
+    # Activez sur la branche de développement (ajustez selon vos besoins)
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# =============================================================================
+# Stage 2: Validation Manuelle du Quiz
+# =============================================================================
+
+wait-for-quiz-answer:
+  stage: quiz
+  needs: ["llm-quiz-generation"]
+  script:
+    - echo "🛑 ATTENTE DE VALIDATION HUMAINE"
+    - echo "Veuillez télécharger l'artefact 'quiz_report.html' du job précédent,"
+    - echo "répondez aux questions, obtenez le code, puis relancez ce job avec la variable :"
+    - echo "Variable => QUIZ_SECRET"
+    - |
+      if [ "$EXPECTED_SECRET_HASH" == "SKIP" ]; then
+        echo "Pas de diff, passage automatique.";
+        exit 0;
+      fi
+      
+      if [ -z "$QUIZ_SECRET" ]; then
+        echo "❌ Erreur : La variable QUIZ_SECRET n'est pas fournie."
+        echo "Relancez ce job manuellement en ajoutant la variable QUIZ_SECRET avec la valeur obtenue dans le rapport HTML."
+        exit 1
+      fi
+
+      if [ "$QUIZ_SECRET" == "$EXPECTED_SECRET_HASH" ]; then
+        echo "✅ Code correct ! Le pipeline continue."
+        exit 0
+      else
+        echo "❌ Code incorrect. Attendu: [MASQUÉ], Reçu: $QUIZ_SECRET"
+        exit 1
+      fi
+  when: manual         # Rend le job manuel (bloquant)
+  allow_failure: false # Si le code est faux, le pipeline s'arrête vraiment
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+
+# =============================================================================
+# Stage 3: Tests (après validation du quiz)
+# =============================================================================
+
+test:
+  stage: test
+  image: python:${PYTHON_VERSION}-slim
+  needs:
+    - job: wait-for-quiz-answer
+      optional: true  # Le quiz n'existe pas sur toutes les branches
+  before_script:
+    - pip install -r requirements.txt
+  script:
+    - echo "🧪 Exécution des tests unitaires..."
+    - pytest tests/ -v --cov=diffquiz --cov-report=term-missing
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  artifacts:
+    when: always
+    reports:
+      junit: pytest-report.xml
+    paths:
+      - coverage.xml
+
+# =============================================================================
+# Stage 4: Déploiement GitLab Pages (rapports)
+# =============================================================================
+
+pages:
+  stage: deploy
+  image: alpine:latest
+  needs:
+    - test
+  script:
+    - echo "📄 Préparation des GitLab Pages..."
+    - mkdir -p public
+    - |
+      cat > public/index.html <<HTML
+      <!doctype html>
+      <html lang="fr">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>DiffQuiz - Rapports CI</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+      </head>
+      <body class="bg-light">
+        <div class="container py-5">
+          <h1>🛡️ DiffQuiz - Rapports du Pipeline</h1>
+          <p class="lead">Rapports générés par le pipeline GitLab CI</p>
+          <div class="card mt-4">
+            <div class="card-body">
+              <h5>📊 Ressources disponibles</h5>
+              <ul>
+                <li>Quiz de validation dans les artifacts</li>
+                <li>Rapports de tests dans les artifacts</li>
+              </ul>
+            </div>
+          </div>
+          <footer class="mt-5 text-muted">
+            <small>Généré le $(date '+%d/%m/%Y à %H:%M:%S')</small>
+          </footer>
+        </div>
+      </body>
+      </html>
+      HTML
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# =============================================================================
+# Notes de personnalisation
+# =============================================================================
+# 
+# 1. Variables d'environnement requises (Settings > CI/CD > Variables) :
+#    - LLM_API_KEY : Clé API OpenAI (ou autre LLM)
+#    - LLM_API_URL : URL de l'API (optionnel, défaut: OpenAI)
+#    - LLM_MODEL : Modèle à utiliser (optionnel, défaut: gpt-4o-mini)
+#
+# 2. Adaptez les règles (rules) selon vos branches :
+#    - Remplacez "dev" par votre branche de développement
+#    - Ajoutez d'autres branches si nécessaire
+#
+# 3. Pour ajouter des étapes de build/déploiement :
+#    - Ajoutez vos stages dans la liste 'stages'
+#    - Créez les jobs correspondants
+#
+# 4. Pour utiliser un registry Docker privé :
+#    - Configurez les variables CI_REGISTRY_*
+#    - Adaptez les images Docker utilisées
+# =============================================================================
